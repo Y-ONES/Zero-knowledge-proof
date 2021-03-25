@@ -1,0 +1,247 @@
+
+import sys
+from hashlib import sha3_256
+import gmpy2
+import math
+import numpy as np
+
+
+safe_ord = ord if sys.version[0] == '2' else lambda x: x
+firstPrimes = []
+def to_bytes(obj):
+    return bytes(str(obj), "utf8")
+
+def bytes_to_int(x):
+    o = 0
+    for b in x:
+        o = (o << 8) + safe_ord(b)
+    return o
+
+def intHash(data):
+    h = sha3_256(data).digest()
+    i = bytes_to_int(h[:16])
+    return i
+
+def primeHash(data):
+    i = intHash(data)
+    p = int(gmpy2.next_prime(i))
+    return p
+
+def bits(n):
+    return math.ceil(math.log2(n))
+
+def prod(xs):
+    y = 1
+    for x in xs:
+        y *= int(x)
+    return y
+
+def pows(g, exponents, mod):
+    y = g
+    for e in exponents:
+        y = pow(y, int(e), mod)
+    return y
+
+def extended_euclidean_algorithm(a, b):
+    s, old_s = 0, 1
+    t, old_t = 1, 0
+    r, old_r = b, a
+
+    while r != 0:
+        quotient = old_r // r
+        old_r, r = r, old_r - quotient * r
+        old_s, s = s, old_s - quotient * s
+        old_t, t = t, old_t - quotient * t
+
+    return old_r, old_s, old_t
+
+
+def primesfrom2to(n):
+    # https://stackoverflow.com/questions/2068372/fastest-way-to-list-all-primes-below-n-in-python/3035188#3035188
+    sieve = np.ones(n//3 + (n%6==2), dtype=np.bool)
+    sieve[0] = False
+    for i in range(int(n**0.5)//3+1):
+        if sieve[i]:
+            k=3*i+1|1
+            sieve[      ((k*k)//3)      ::2*k] = False
+            sieve[(k*k+4*k-2*k*(i&1))//3::2*k] = False
+    return np.r_[2,3,((3*np.nonzero(sieve)[0]+1)|1)]
+
+
+def initPrimes(maxId):
+    global firstPrimes
+    maxN = maxId * int(np.log(maxId) + 5)
+    firstPrimes = primesfrom2to(maxN)
+    print("Precomputed %i primes < %i" % (len(firstPrimes), maxN))
+
+def toPrimes(indices):
+    maxId = np.max(indices) if len(indices) else 1
+    if maxId >= len(firstPrimes):
+        initPrimes(maxId)
+    return firstPrimes[ indices ]
+
+def toBitPositions(ids, values, nbits):
+    assert len(ids) == len(values)
+    zeros = []
+    ones = []
+
+    for iVal, val in zip(ids, values):
+        for iBit in range(iVal * nbits, (iVal+1) * nbits):
+            if val % 2:
+                ones.append(iBit)
+            else:
+                zeros.append(iBit)
+            val >>= 1
+        if val != 0:
+            print("Warning: values[%i] is too big for %i bits!" % (iVal, nbits))
+
+    return zeros, ones
+
+
+class Commitment(object):
+    MOD = RSA2048 = 25195908475657893494027183240048398571429282126204032027777137836043662020707595556264018525880784406918290641249515082189298559149176184502808489120072844992687392807287776735971418347270261896375014971824691165077613379859095700097330459748808428401797429100642458691817195118746121515172654632282216869987549182422433637259085141865462043576798423387184774447920739934236584823824281198163815010674810451660377306056201619676256133844143603833904414952634432190114657544454178424020924616515723350778707749817125772467962926386356373289912154831438167899885040445364023527381951378636564391212010397122822120720357;
+    G = 2**256 - 2**32 - 977
+    assert gmpy2.is_prime(G)
+    assert MOD % G != 0
+
+    def commit(self, indices):
+        self.committedPrimes = toPrimes(indices)
+        return pows(self.G, self.committedPrimes, self.MOD)
+
+    def proveMembers(self, claimedIndices):
+        # hash(items not in subset)
+        claimedPrimes = toPrimes(claimedIndices)
+        otherPrimes = set(self.committedPrimes).difference(claimedPrimes)
+        return pows(self.G, otherPrimes, self.MOD)
+
+    def verifyMembers(self, claimedIndices, proof, commit):
+        claimedPrimes = toPrimes(claimedIndices)
+        actual = pows(proof, claimedPrimes, self.MOD)
+        return actual == commit
+
+    def proveDisjoint(self, disjointIndices):
+        return self.proveMixed(disjointIndices, checkDisjoint=True)
+
+    def verifyDisjoint(self, disjointIndices, proof, commit):
+        return self.verifyMixed([], disjointIndices, proof, commit)
+
+    def proveMixed(self, subsetIndices, checkDisjoint=False):
+        # From https://www.cs.purdue.edu/homes/ninghui/papers/accumulator_acns07.pdf
+
+        u = prod(self.committedPrimes)   #所有的承诺
+        # commit == pow(G, u, MOD)
+        x = prod(toPrimes(subsetIndices))
+
+        gcd, a, b = extended_euclidean_algorithm(u, x)
+        # au + bx == gcd
+
+        if checkDisjoint and gcd != 1:
+            print("Warning: Some members of X are in the commited set, we cannot prove that they are disjoint!")
+
+
+        # 将系数调整到正确的范围内。
+        # 求k，使a=a+k*x>0，b=b-k*u<0。
+        if a < 0 or b > 0:
+            k = max(-a // x, b // u) + 1
+            a = a + k * x
+            b = b - k * u
+
+        d = pow(self.G, -b, self.MOD)
+        return [a, d]
+
+    def verifyMixed(self, subsetIndices, disjointIndices, proof, commit):
+        subsetPrimes = list(toPrimes(subsetIndices))
+        g_gcd = pows(self.G, subsetPrimes, self.MOD)
+        disjointPrimes = list(toPrimes(disjointIndices))
+        a, d = proof
+        d_x = (pows(d, disjointPrimes+subsetPrimes, self.MOD) * g_gcd) % self.MOD
+        c_a = pow(commit, a, self.MOD)
+        return d_x == c_a
+
+
+class CommitmentValues(Commitment):
+    " 数值承诺。"
+    def __init__(self, nbits):
+        self.nbits = nbits
+
+    def commitValues(self, values):
+        #提交值位为0的索引
+        valueIds = np.arange(len(values))
+        self.zeros, self.ones = toBitPositions(valueIds, values, self.nbits)
+        return self.commit(self.zeros)
+
+    def proveValues(self, valueIds):
+        #找到要证明的值的二进制0和1的索引。
+        valueIds = set(valueIds)
+        zeros = [i for i in self.zeros if i//self.nbits in valueIds]
+        ones  = [i for i in self.ones  if i//self.nbits in valueIds]
+        #证明零是成员，而一不是成员。
+        return self.proveMixed(zeros + ones)
+
+    def verifyValues(self, valueIds, values, proof, commit):
+        zeros, ones = toBitPositions(valueIds, values, self.nbits)
+        return self.verifyMixed(zeros, ones, proof, commit)
+
+
+
+
+if __name__ == "__main__":
+
+
+    fullSet    = np.array([3, 12, 17, 23, 35, 99]) # + list(range(50000,50100)))
+    subset     = np.array([   12,     23        ])
+    complement = np.array([3,     17,     35, 99])
+    disjoint   = np.array([                        5, 6]) # + list(range(50100,50200)))
+    mixed      = np.array([   12,     23,          5, 6])
+
+    sp = Commitment()
+    commit = sp.commit(fullSet)
+    print("Commitment:", bits(commit)//8, "bytes\n")
+
+    proofSubset = sp.proveMembers(subset)
+    assert sp.verifyMembers(subset, proofSubset, commit)
+    print("Proof of memberships:", bits(proofSubset)//8, "bytes")
+    print("Accepted correct proof of subset!\n")
+
+    cheatDisjoint = sp.proveMembers(disjoint)
+    assert not sp.verifyMembers(disjoint, cheatDisjoint, commit)
+    print("Rejected incorrect proof for a disjoint set!\n")
+
+    cheatMixed = sp.proveMembers(mixed)
+    assert not sp.verifyMembers(mixed, cheatMixed, commit)
+    print("Rejected incorrect proof for an overlapping set!\n")
+
+    proofDisjoint = sp.proveDisjoint(disjoint)
+    assert sp.verifyDisjoint(disjoint, proofDisjoint, commit)
+    print("Proof of non-memberships:",
+        (bits(proofDisjoint[0]) + bits(proofDisjoint[1])) // 8, "bytes")
+    print("Accepted correct proof of non-subset!\n")
+
+    cheatNotSubset = sp.proveDisjoint(subset)
+    assert not sp.verifyDisjoint(subset, cheatNotSubset, commit)
+    print("Rejected incorrect proof of non-subset (subset)!\n")
+
+    cheatNotMixed = sp.proveDisjoint(mixed)
+    assert not sp.verifyDisjoint(mixed, cheatNotMixed, commit)
+    print("Rejected incorrect proof of non-subset (mixed)!\n")
+
+    proofMixed = sp.proveMixed(mixed)
+    assert sp.verifyMixed(subset, disjoint, proofMixed, commit)
+    print("Accepted correct proof of a mixed set!")
+
+    # Example with values
+    values    = np.array([3, 12, 17, 23, 35, 99])
+    revealIds = [1, 3]
+
+    spv = CommitmentValues(nbits=8)
+    commit = spv.commitValues(values)
+
+    proofValues = spv.proveValues(revealIds)
+    print("Proof of an array of values:",
+        (bits(proofValues[0]) + bits(proofValues[1])) // 8, "bytes")
+
+    assert spv.verifyValues(revealIds, values[revealIds], proofValues, commit)
+    print("Accepted correct proof of an array of values!\n")
+
+    assert not spv.verifyValues(revealIds, [12, 42], proofValues, commit)
+    print("Rejected incorrect proof of an array of values!\n")
