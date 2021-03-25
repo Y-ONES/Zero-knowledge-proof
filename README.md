@@ -1,4 +1,4 @@
-# ONE
+# Zero-knowledge proof
 Zero-knowledge proof 零知识证明
 1.程序说明
 在加密开发者的工具带上有一种鲜为人知的技术。密码学累加器是一种具有几种奇异性质的原语，可用于构建各种零知识证明系统。密码学累加器最早是由 Josh Benaloh 和 Michael de Mare 提出的，原始论文《One-way accumulators: A decentralized alternative to digital sinatures (extended abstract) 》 于 1993 年发表在欧洲密码学会议（EUROCRYPT）上。一个密码学上的累加器是一个单向的隶属函数。它可用于识别一个候选是否为一个集合的成员，且不会在过程中暴露集合中的成员。这个概念因 Zerocoin的提出重新受到重视。实际上，主要类型的累加器类似于RSA，并且基于模幂运算。
